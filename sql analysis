@@ -1,0 +1,233 @@
+-- Assumptions:
+-- COURSES table has one record per course because it is a lookup/reference table
+-- courseID is a primary key
+--
+-- REGISTRATIONS table may have more than one record per student because sometimes registrations
+-- can register twice if there is an issue with the student's internet. 
+-- registrationID is the primary key
+--
+-- COURSEPROGRESS table may have more than one record per registrationID due to the same issues
+-- mentioned above or the student may have watched the lesson more than once
+-- progressID is the primary key
+--
+-- Each student has a unique studentID and for each course they register for, they 
+-- receive a registrationID
+
+----------------------
+-- Task1 Question 1 --
+----------------------
+
+
+-- Calculate the unqiue number of students per course
+CREATE TABLE RegisteredStudents (
+SELECT
+	courseID,
+	count(distinct studentID) TotalStudentsRegistered -- Q1.1
+FROM
+	registrations
+GROUP BY courseID
+);
+
+-- Only include rows where the lesson is completed and is the first instance
+-- of the student completing the lesson
+CREATE TABLE CompletedLessons (
+SELECT
+	registrationID,
+	lessonID,
+	completionDate,
+	row_number() OVER (PARTITION BY registrationID, lessonID ORDER BY completionDate ASC) rn
+FROM
+	courseProgress
+WHERE completed IS True    -- Q1.3
+);
+
+-- Calculate the number of lessons that each student has completed for each course
+CREATE TABLE CompletedLessonsPerCourse (
+	courseID,
+	count(distinct lessonID) TotalLessonsCompleted
+FROM
+	completedLessons cl
+	
+LEFT JOIN
+	(SELECT DISTINCT
+		courseID,
+		registrationID
+	FROM
+		registrations
+	) r 
+on cl.registrationID = r.registrationID
+
+WHERE rn = 1
+GROUP by 1
+);
+
+-- Bring it all together in descending order
+-- Q1.4
+SELECT
+	cou.courseName,
+	cou.Category,
+	rs.TotalStudentsRegistered,
+	clpc.TotalLessonsCompleted
+FROM	
+	RegisteredStudents rs
+	
+LEFT JOIN
+	CompletedLessonsPerCourse clpc
+ON rs.courseID = clpc.courseID
+	
+LEFT JOIN
+	course cou 
+ON rs.courseID = cou.courseID
+
+ORDER by 4 DESC -- Q1.5
+
+
+
+-----------------------
+-- Task 1 Question 2 --
+-----------------------
+-- This does refer back to tables created in Q1
+
+-- Q2.2
+-- Rank all course registrations to identify the first registration that each student
+-- did for each course
+CREATE TABLE RegisteredStudentsPerMonth(
+SELECT
+	courseID,
+	YearMonth,
+	count(studentID) TotalRegistrations
+FROM
+	(SELECT
+		courseID,
+		registrationDate,
+		CONCAT(YEAR(registrationDate), '-', MONTH(registrationDate)) YearMonth,
+		studentID,
+		row_number() OVER (PARTITION BY courseID, studentID ORDER BY registrationDate ASC) rn
+	FROM
+		registrations
+	)
+WHERE rn = 1
+);
+
+CREATE TABLE RegistrationsPerCategory(
+SELECT
+	crs.category,
+	YearMonth,
+	sum(TotalRegistrations) TotalRegistrations
+FROM
+	RegisteredStudentsPerMonth pm
+	
+LEFT JOIN
+	courses crs
+ON pm.courseID = crs.courseID
+
+GROUP BY 1,2
+);
+
+-- Q2.1
+-- Rank all lesson completions to identify the first completion that each student
+-- did for each course
+CREATE TABLE LessonsAll(
+SELECT
+	registrationID,
+	lessonID,
+	completionDate,
+	row_number() OVER (PARTITION BY registrationID, lessonID ORDER BY completionDate ASC) rn
+FROM
+	courseProgress cpr
+
+WHERE completed IS True
+);
+
+-- Link each completed lesson to their respective courses
+CREATE TABLE LessonsCatAll (
+SELECT
+	ses.category,
+	reg.courseID,
+	reg.registrationID,
+	lessonID,
+	CONCAT(YEAR(completionDate), '-', MONTH(completionDate)) YearMonth
+FROM
+	LessonsAll lpm
+	
+LEFT JOIN
+	(SELECT DISTINCT
+		courseID,
+		registrationID
+	FROM
+		registrations
+	) reg
+ON 	lpm.registrationID = reg.registrationID
+
+LEFT JOIN
+	courses ses
+ON reg.courseID = ses.courseID
+
+WHERE rn = 1
+);
+
+-- Aggregate data to how many lessons were completed each month for each category
+CREATE TABLE LessonsPerCategory(
+SELECT
+	category,
+	YearMonth,
+	sum(lessons) TotalLessonsCompleted
+FROM
+	LessonsCatAll
+	
+GROUP BY 1,2
+);
+
+
+-- Q2.3
+-- Calculate completion rate and rank each category per month
+CREATE TABLE CategoryCompletion (
+SELECT
+	YearMonth,
+	Category,
+	CompletionRate,
+	rank() OVER (PARTITION BY category, YearMonth ORDER BY CompletionRate DESC) CategoryRank
+FROM
+	(SELECT
+		lpc.category,
+		lpc.YearMonth,
+		TotalLessonsCompleted,
+		TotalLessonsCompleted / TotalRegistrations as CompletionRate
+	FROM
+		LessonsPerCategory lpc
+		
+	LEFT JOIN
+		RegistrationsPerCategory rpc
+	ON lpc.category = rpc.category
+	AND lpc.YearMonth = rpc.YearMonth
+	)
+WHERE TotalLessonsCompleted >= 100 -- Q2.5
+);
+
+-- Q2.4 & 2.6
+-- Bring it all together, ordering by YearMonth and CategoryRank in ascending order
+SELECT
+	cc.YearMonth,
+	cc.Category,
+	TotalLessonsCompleted,
+	cc.CompletionRate,
+	cc.CategoryRank
+FROM
+	CategoryCompletion cc
+	
+LEFT JOIN
+	(SELECT
+		YearMonth,
+		sum(TotalLessonsCompleted) TotalLessonsCompleted
+	FROM
+		LessonsPerCategory
+	GROUP BY 1
+	) tlc
+on cc.YearMonth = tlc.YearMonth
+
+ORDER BY 1 ASC, 5 ASC
+;
+	
+	
+
+
